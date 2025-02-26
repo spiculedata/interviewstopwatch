@@ -17,7 +17,8 @@ COPY --from=yarn-install /yarn-install/node_modules ./node_modules/
 # install dapr 
 RUN wget -q https://raw.githubusercontent.com/dapr/cli/master/install/install.sh -O - | /bin/bash
 
-RUN yarn tsc
+# RUN yarn tsc
+RUN yarn build
 
 EXPOSE 5173
 
