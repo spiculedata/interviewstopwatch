@@ -1,0 +1,26 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+      - feature/**
+      - release/**
+      - main
+      - dev
+    # paths:
+    #   - unchained/**
+    #   - .github/workflows/node-build.yaml
+    #   - .github/build-config.jsonc
+  # Handles release branch creation without push, avoids duplicate runs by restricting to open events
+  pull_request:
+    types:
+      - opened
+    branches:
+      - main
+jobs:
+  node-build:
+    uses: IRIEAccelerator/common-workflows/.github/workflows/node-reuse.yaml@main
+    secrets: inherit
+    with:
+      config-file: .github/build-config.jsonc
+      runner: injected-runner

@@ -1,0 +1,20 @@
+name: "Create webapp slot"
+
+on:
+  create:
+    # Create event does not support branch filter. Filtering on if condition
+    branches:
+      - feature/**
+  push:
+    branches:
+      - feature/**
+    paths:
+      - .github/build-config.jsonc
+  workflow_dispatch:
+jobs:
+  create-slot:
+    if: ${{ contains(github.ref, 'refs/heads/feature/') }}
+    uses: IRIEAccelerator/common-workflows/.github/workflows/webapp-slot-create-reuse.yaml@main
+    secrets: inherit
+    with:
+      config-file: .github/build-config.jsonc
