@@ -1,0 +1,13 @@
+{
+    "subscription_id": "5f6164a1-6fc6-4db8-b2d8-b143ab73a0a0",
+    "deploy_type": "K8S",
+    "app_name": "interview-stopwatch",
+    "acr_name": "acrnetcus",
+    "builds": [
+        {
+            "image_name": "interview-stopwatch",
+            "context": ".",
+            "dockerfile": "Dockerfile"
+        }
+    ]
+}
