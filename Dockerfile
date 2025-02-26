@@ -15,8 +15,8 @@ COPY . .
 COPY --from=yarn-install /yarn-install/node_modules ./node_modules/
 
 # Set environment variables
-ENV DAPR_CLI_VERSION=1.14.4
-ENV DAPR_RUNTIME_VERSION=1.14.4
+ENV DAPR_CLI_VERSION=1.14.1
+ENV DAPR_RUNTIME_VERSION=1.14.1
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
