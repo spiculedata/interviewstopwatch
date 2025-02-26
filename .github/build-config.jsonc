@@ -1,5 +1,6 @@
 {
     "subscription_id": "5f6164a1-6fc6-4db8-b2d8-b143ab73a0a0",
+    "prod_deployment_folder": "deployments",
     "deploy_type": "K8S",
     "app_name": "interview-stopwatch",
     "acr_name": "acrnetcus",
