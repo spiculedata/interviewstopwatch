@@ -6,4 +6,12 @@ export default defineConfig({
 		tailwindcss(),
 		sveltekit(),
 	],
+	server: {
+		cors: {
+			origin: ['https://interview-stopwatch.internal.researchaccelerator.org/', 'http://localhost:5173'],
+			methods: ['GET', 'POST'],
+			allowedHeaders: ['Content-Type']
+		},
+		allowedHosts: ['.internal.researchaccelerator.org'] //starting with . allows wildcard for all subdomains
+	}
 });

@@ -1,0 +1,24 @@
+name: "Delete webapp slot"
+
+on:
+  delete:
+    # Delete event does not support branch filter. Filtering on if condition
+    branches:
+      - feature/**
+  workflow_dispatch:
+jobs:
+  # TODO: remove later after filter works awhile
+  dump_contexts_to_log:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump GitHub context
+        run: echo "$GITHUB_CONTEXT"
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+  delete-slot:
+    if: ${{ startsWith(github.event.ref, 'feature/') }}
+    uses: IRIEAccelerator/common-workflows/.github/workflows/webapp-slot-delete-reuse.yaml@main
+    secrets: inherit
+    with:
+      config-file: .github/build-config.jsonc
+      runner: injected-runner
