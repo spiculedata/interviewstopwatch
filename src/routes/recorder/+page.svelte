@@ -102,10 +102,11 @@
         if (!isRunning) {
             isRunning = true;
             startTime = Date.now() - elapsedTime;
-            timerInterval = setInterval(updateTimer, 1000);
+            // Change from 1000ms to 100ms for smoother updates
+            timerInterval = setInterval(updateTimer, 100);
         }
     }
-
+    let animationFrameId = null;
     function stopTimer() {
         if (isRunning) {
             isRunning = false;
@@ -116,6 +117,34 @@
         }
     }
     let timelineKey = 0; // Used to force UI refresh
+    function startVideoProgressUpdates() {
+        // Cancel any existing animation frame
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+        }
+
+        function updateVideoProgress() {
+            if (videoElement && videoElement.duration) {
+                // Update seek position
+                seekPosition = videoElement.currentTime / videoElement.duration;
+
+                // You could also update the timeline markers here if needed
+                // but that might be too performance-intensive
+            }
+
+            // Continue the loop
+            animationFrameId = requestAnimationFrame(updateVideoProgress);
+        }
+
+        // Start the loop
+        animationFrameId = requestAnimationFrame(updateVideoProgress);
+    }
+    function stopVideoProgressUpdates() {
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+        }
+    }
     function updateTimer() {
         elapsedTime = Date.now() - startTime;
         const minutes = Math.floor(elapsedTime / 60000);
@@ -493,6 +522,7 @@
         return () => {
             if (timerInterval) clearInterval(timerInterval);
             if (videoURL) URL.revokeObjectURL(videoURL);
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
             window.removeEventListener('mousemove', handleSeekMove);
             window.removeEventListener('mouseup', handleSeekEnd);
         };
@@ -504,9 +534,10 @@
 
         videoElement.addEventListener('timeupdate', () => {
             currentTime = videoElement.currentTime;
-            if (!isDragging && videoElement.duration) {
-                seekPosition = currentTime / videoElement.duration;
-            }
+            // Remove this line since we're using requestAnimationFrame
+            // if (!isDragging && videoElement.duration) {
+            //     seekPosition = currentTime / videoElement.duration;
+            // }
         });
 
         videoElement.addEventListener('durationchange', () => {
@@ -526,7 +557,7 @@
 
         videoElement.addEventListener('play', () => {
             isPlaying = true;
-
+            startVideoProgressUpdates();
             // Lock positions when video starts playing to prevent jumping
             if (!arePositionsLocked && timeEntries.length > 0) {
                 console.log("Locking positions on play...");
@@ -544,10 +575,12 @@
 
         videoElement.addEventListener('pause', () => {
             isPlaying = false;
+            stopVideoProgressUpdates();
         });
 
         videoElement.addEventListener('ended', () => {
             isPlaying = false;
+            stopVideoProgressUpdates();
         });
     }
 
