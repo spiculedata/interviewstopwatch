@@ -1,61 +1,50 @@
 <!-- src/routes/meeting/[type]/+page.svelte -->
-<script>
+<script lang="ts">
     import { page } from '$app/stores';
     import { onMount } from 'svelte';
-    import { goto } from '$app/navigation';
     import { saveMeetingData } from '$lib/meetingService';
+    import { tick } from 'svelte';
 
-    // Get the meeting type from the route parameter
-    $: meetingType = $page.params.type;
-    $: customName = $page.url.searchParams.get('name');
-
-    // Map of meeting type to full name
-    const meetingNames = {
-        'ux': 'UX Research Interview',
-        'client': 'Client Meeting',
-        'stakeholder': 'Stakeholder Meeting',
-        'team': 'Team Meeting',
-        'custom': customName || 'Custom Meeting'
+    // Types
+    type AnnotationType = {
+        id: string;
+        icon: string;
+        label: string;
+        color: string;
     };
 
-    // Get the display name based on the meeting type
-    $: meetingName = meetingNames[meetingType] || 'Meeting';
-
-    let meetingId = '';
-    let isSaving = false;
-    let saveError = null;
-
-    // Timer functionality
-    let isRunning = false;
-    let startTime = null;
-    let elapsedTime = 0;
-    let formattedTime = "00:00";
-    let timerInterval;
-    let timeEntries = [];
-
-    // Panel state
-    let isRightPanelOpen = false;
-
-    // Video reference
-    let videoElement;
-    let videoFile = null;
-    let videoURL = null;
-
-    // Summary data
-    let summaryData = {
-        userInfo: 0,
-        questions: 0,
-        answers: 0,
-        painPoints: 0,
-        ambivalent: 0,
-        successPoints: 0,
-        featureIdeas: 0,
-        notes: 0,
-        other: 0
+    type TimeEntry = {
+        id: string;
+        type: string;
+        videoTime: number;
+        videoTimeFormatted: string;
+        stopwatchTime: string;
+        elapsedTimeMs: number;
+        timestamp: number;
+        description: string;
     };
 
-    // New annotation types
-    const annotationTypes = [
+    type TimelineMarker = TimeEntry & {
+        position: number;
+        color: string;
+        icon: string;
+    };
+
+    type SummaryData = {
+        userInfo: number;
+        questions: number;
+        answers: number;
+        painPoints: number;
+        ambivalent: number;
+        successPoints: number;
+        featureIdeas: number;
+        notes: number;
+        other: number;
+        [key: string]: number; // Index signature for dynamic access
+    };
+
+    // Constants and configuration
+    const ANNOTATION_TYPES: AnnotationType[] = [
         { id: 'userInfo', icon: '👤', label: 'User Info', color: '#e3f2fd' },
         { id: 'question', icon: '?', label: 'Question', color: '#f3e5f5' },
         { id: 'answer', icon: '🔊', label: 'Answer', color: '#e8f5e9' },
@@ -67,69 +56,162 @@
         { id: 'other', icon: '〰️', label: 'Other', color: '#fafafa' }
     ];
 
-    // Current point type
-    let currentPointType = null;
-    let customButtons = [];
-    function scaleTimelinePositions() {
-        // Get all markers sorted by elapsed time
-        const sortedEntries = [...timeEntries].sort((a, b) => a.elapsedTimeMs - b.elapsedTimeMs);
+    // Route and URL parameters
+    $: meetingType = $page.params.type;
+    $: customName = $page.url.searchParams.get('name');
+    $: meetingId = $page.url.searchParams.get('id') || generateMeetingId();
 
-        // If we have a video element with duration
-        if (videoElement && videoElement.duration > 0) {
-            console.log(`Scaling timeline for video duration: ${videoElement.duration}s`);
+    // Meeting type name mapping
+    const meetingNames: {[key: string]: string} = {
+        'ux': 'UX Research Interview',
+        'client': 'Client Meeting',
+        'stakeholder': 'Stakeholder Meeting',
+        'team': 'Team Meeting',
+        'custom': customName || 'Custom Meeting'
+    };
+    $: meetingName = meetingNames[meetingType] || 'Meeting';
 
-            // For each entry, scale its position proportionally to the video duration
-            sortedEntries.forEach(entry => {
-                // Calculate position as percentage of total elapsed time
-                const relativeTime = entry.elapsedTimeMs / elapsedTime;
+    // State management
+    let customButtons: AnnotationType[] = [];
+    let currentPointType: string | null = null;
+    let timeEntries: TimeEntry[] = [];
+    let timelineMarkers: TimelineMarker[] = [];
+    let timelineKey = 0;
 
-                // Scale to video duration and convert to timeline position
-                const videoTime = relativeTime * videoElement.duration;
-                const position = (videoTime / videoElement.duration) * 100;
+    // Panel state
+    let isRightPanelOpen = false;
 
-                // Store the scaled position
-                lockedPositions[entry.id] = Math.min(98, Math.max(2, position));
-            });
+    // Summary data
+    let summaryData: SummaryData = {
+        userInfo: 0,
+        questions: 0,
+        answers: 0,
+        painPoints: 0,
+        ambivalent: 0,
+        successPoints: 0,
+        featureIdeas: 0,
+        notes: 0,
+        other: 0
+    };
 
-            // Lock positions to keep them from moving
-            arePositionsLocked = true;
+    // Video state
+    let videoElement: HTMLVideoElement;
+    let videoFile: File | null = null;
+    let videoURL: string | null = null;
+    let isPlaying = false;
+    let currentTime = 0;
+    let duration = 0;
+    let seekPosition = 0;
+    let isDragging = false;
+    let animationFrameId: number | null = null;
 
-            // Update the timeline display
-            updateTimelineMarkers();
-        }
-    }
-    function startTimer() {
+    // Timer state
+    let isRunning = false;
+    let startTime: number | null = null;
+    let elapsedTime = 0;
+    let formattedTime = "00:00";
+    let timerInterval: ReturnType<typeof setInterval> | null = null;
+    let maxRecordedElapsedTime = 0;
+
+    // Timeline positioning
+    let arePositionsLocked = false;
+    let lockedPositions: {[key: string]: number} = {};
+
+    // ========== Timer Functions ==========
+
+    function startTimer(): void {
         if (!isRunning) {
             isRunning = true;
             startTime = Date.now() - elapsedTime;
-            // Change from 1000ms to 100ms for smoother updates
-            timerInterval = setInterval(updateTimer, 100);
+            timerInterval = setInterval(updateTimer, 100); // 100ms for smoother updates
         }
     }
-    let animationFrameId = null;
-    function stopTimer() {
+
+    function stopTimer(): void {
         if (isRunning) {
             isRunning = false;
-            clearInterval(timerInterval);
-
-            // Save the final elapsed time when stopping
+            if (timerInterval) {
+                clearInterval(timerInterval);
+            }
             maxRecordedElapsedTime = Math.max(maxRecordedElapsedTime, elapsedTime);
         }
     }
-    let timelineKey = 0; // Used to force UI refresh
-    function startVideoProgressUpdates() {
-        // Cancel any existing animation frame
-        if (animationFrameId) {
-            cancelAnimationFrame(animationFrameId);
-        }
 
-        function updateVideoProgress() {
+    function updateTimer(): void {
+        if (startTime === null) return;
+
+        elapsedTime = Date.now() - startTime;
+        const minutes = Math.floor(elapsedTime / 60000);
+        const seconds = Math.floor((elapsedTime % 60000) / 1000);
+        formattedTime = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
+        // Track the maximum elapsed time
+        maxRecordedElapsedTime = Math.max(maxRecordedElapsedTime, elapsedTime);
+
+        // Only update timeline when necessary
+        updateTimelineMarkers();
+    }
+
+    function getStopwatchTime(): string {
+        return formattedTime;
+    }
+
+    // ========== Video Player Functions ==========
+
+    function togglePlay(): void {
+        if (videoElement) {
+            if (videoElement.paused) {
+                // Lock positions when play starts if needed
+                lockPositionsIfNeeded();
+
+                videoElement.play()
+                    .then(() => {
+                        isPlaying = true;
+                    })
+                    .catch(err => {
+                        console.error('Error playing video:', err);
+                        isPlaying = false;
+                    });
+            } else {
+                videoElement.pause();
+                isPlaying = false;
+            }
+        }
+    }
+
+    function lockPositionsIfNeeded(): void {
+        if (!arePositionsLocked && videoElement && videoElement.duration > 0) {
+            timeEntries.forEach(entry => {
+                if (lockedPositions[entry.id] === undefined) {
+                    const position = getTimelinePosition(entry);
+                    lockedPositions[entry.id] = position;
+                }
+            });
+            arePositionsLocked = true;
+        }
+    }
+
+    function formatTime(seconds: number): string {
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = Math.floor(seconds % 60);
+        return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+    }
+
+    function getVideoTime(): string {
+        if (videoElement) {
+            return formatTime(videoElement.currentTime);
+        }
+        return "00:00";
+    }
+
+    function startVideoProgressUpdates(): void {
+        // Cancel any existing animation frame
+        stopVideoProgressUpdates();
+
+        function updateVideoProgress(): void {
             if (videoElement && videoElement.duration) {
                 // Update seek position
                 seekPosition = videoElement.currentTime / videoElement.duration;
-
-                // You could also update the timeline markers here if needed
-                // but that might be too performance-intensive
             }
 
             // Continue the loop
@@ -139,41 +221,182 @@
         // Start the loop
         animationFrameId = requestAnimationFrame(updateVideoProgress);
     }
-    function stopVideoProgressUpdates() {
-        if (animationFrameId) {
+
+    function stopVideoProgressUpdates(): void {
+        if (animationFrameId !== null) {
             cancelAnimationFrame(animationFrameId);
             animationFrameId = null;
         }
     }
-    function updateTimer() {
-        elapsedTime = Date.now() - startTime;
-        const minutes = Math.floor(elapsedTime / 60000);
-        const seconds = Math.floor((elapsedTime % 60000) / 1000);
-        formattedTime = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 
-        // Track the maximum elapsed time
-        maxRecordedElapsedTime = Math.max(maxRecordedElapsedTime, elapsedTime);
+    function handleFileUpload(event: Event): void {
+        const target = event.target as HTMLInputElement;
+        const files = target.files;
 
-        // Update timeline markers positions as time changes
-        updateTimelineMarkers();
-    }
+        if (!files || files.length === 0) return;
 
-    function getStopwatchTime() {
-        return formattedTime;
-    }
+        const file = files[0];
+        if (file && file.type.startsWith('video/')) {
+            // Clean up previous video
+            if (videoURL) {
+                URL.revokeObjectURL(videoURL);
+            }
 
-    function getVideoTime() {
-        if (videoElement) {
-            const minutes = Math.floor(videoElement.currentTime / 60);
-            const seconds = Math.floor(videoElement.currentTime % 60);
-            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            // Load the new video
+            videoFile = file;
+            videoURL = URL.createObjectURL(file);
+
+            // Pause any playing video
+            if (videoElement) {
+                videoElement.pause();
+                isPlaying = false;
+            }
+
+            // Reset position locks for new video
+            arePositionsLocked = false;
+            lockedPositions = {};
+
+            // Small delay to ensure DOM is ready
+            setTimeout(() => {
+                if (videoElement) {
+                    setupVideoListeners();
+                    videoElement.src = videoURL;
+                }
+            }, 100);
         }
-        return "00:00";
     }
-    import { tick } from 'svelte';
-    let arePositionsLocked = false;
-    let lockedPositions = {};
-    function recordPoint(type) {
+
+    // ========== Timeline and Seek Functions ==========
+
+    function handleSeekStart(event: MouseEvent): void {
+        isDragging = true;
+        handleSeekMove(event);
+    }
+
+    function handleSeekMove(event: MouseEvent): void {
+        if (!isDragging) return;
+
+        const timeline = event.currentTarget as HTMLElement;
+        const rect = timeline.getBoundingClientRect();
+        const position = (event.clientX - rect.left) / rect.width;
+        seekPosition = Math.min(Math.max(position, 0), 1);
+
+        if (videoElement && videoElement.duration) {
+            currentTime = seekPosition * videoElement.duration;
+        }
+    }
+
+    function handleSeekEnd(): void {
+        if (!isDragging) return;
+
+        isDragging = false;
+        if (videoElement && videoElement.duration) {
+            videoElement.currentTime = seekPosition * videoElement.duration;
+            currentTime = videoElement.currentTime;
+        }
+    }
+
+    function handleTimelineClick(event: MouseEvent): void {
+        const timeline = event.currentTarget as HTMLElement;
+        const rect = timeline.getBoundingClientRect();
+        const clickPosition = (event.clientX - rect.left) / rect.width;
+
+        if (videoElement && videoElement.duration) {
+            videoElement.currentTime = clickPosition * videoElement.duration;
+            currentTime = videoElement.currentTime;
+        }
+    }
+
+    function jumpToVideoTime(time: number): void {
+        if (videoElement && !isNaN(time)) {
+            videoElement.currentTime = time;
+            if (videoElement.paused) {
+                videoElement.play().catch(err => console.error('Error playing video:', err));
+            }
+        }
+    }
+
+    // ========== Timeline Marker Management ==========
+
+    // Update timeline markers - this is a key optimization point
+    function updateTimelineMarkers(): void {
+        // Calculate and update all marker positions
+        timelineMarkers = timeEntries.map(entry => ({
+            ...entry,
+            position: getTimelinePosition(entry),
+            color: getIconColor(entry.type),
+            icon: getIcon(entry.type)
+        }));
+
+        // Force update by incrementing key
+        timelineKey++;
+    }
+
+    function getTimelinePosition(entry: TimeEntry): number {
+        // If positions are locked, use the locked position
+        if (arePositionsLocked && lockedPositions[entry.id] !== undefined) {
+            return lockedPositions[entry.id];
+        }
+
+        let position = 0;
+
+        // Special case for entries with zero elapsed time
+        if (entry.elapsedTimeMs === 0) {
+            const entryIndex = timeEntries.findIndex(e => e.id === entry.id);
+            if (entryIndex >= 0) {
+                const zeroTimeEntries = timeEntries.filter(e => e.elapsedTimeMs === 0).length;
+                const spacing = 5; // Smaller spacing to keep at start
+                position = 2 + (entryIndex % zeroTimeEntries) * spacing;
+            } else {
+                position = 2;
+            }
+        }
+        // For entries with elapsed time, calculate the position properly
+        else if (entry.elapsedTimeMs > 0) {
+            const maxTimeToUse = Math.max(maxRecordedElapsedTime, elapsedTime);
+
+            if (videoElement && videoElement.duration > 0) {
+                // Scale elapsed time relative to video duration
+                const scaledPosition = (entry.elapsedTimeMs / maxTimeToUse) *
+                    (maxTimeToUse / (videoElement.duration * 1000)) * 100;
+
+                position = scaledPosition;
+            } else {
+                // If no video, distribute based on elapsed time
+                position = (entry.elapsedTimeMs / maxTimeToUse) * 100;
+            }
+        }
+
+        // Ensure position is within bounds
+        return Math.min(98, Math.max(2, position));
+    }
+
+    function scaleTimelinePositions(): void {
+        if (videoElement && videoElement.duration > 0) {
+            // Get all markers sorted by elapsed time
+            const sortedEntries = [...timeEntries].sort((a, b) => a.elapsedTimeMs - b.elapsedTimeMs);
+
+            // Scale positions proportionally to video duration
+            sortedEntries.forEach(entry => {
+                const relativeTime = entry.elapsedTimeMs / elapsedTime;
+                const videoTime = relativeTime * videoElement.duration;
+                const position = (videoTime / videoElement.duration) * 100;
+
+                // Store the scaled position
+                lockedPositions[entry.id] = Math.min(98, Math.max(2, position));
+            });
+
+            // Lock positions
+            arePositionsLocked = true;
+
+            // Update the display
+            updateTimelineMarkers();
+        }
+    }
+
+    // ========== Entry Management ==========
+
+    function recordPoint(type: string): void {
         if (!isRunning && type !== 'end') {
             startTimer();
         }
@@ -181,12 +404,12 @@
         if (type === 'end') {
             stopTimer();
         } else {
-            // Capture the current video time precisely before creating the entry
+            // Capture current times
             const capturedVideoTime = videoElement ? videoElement.currentTime : 0;
             const capturedVideoTimeFormatted = videoElement ? formatTime(capturedVideoTime) : "00:00";
 
-            // Create the new entry with correct video time
-            const newEntry = {
+            // Create the new entry
+            const newEntry: TimeEntry = {
                 id: `entry-${Date.now()}`,
                 type,
                 videoTime: capturedVideoTime,
@@ -198,7 +421,7 @@
             };
 
             // Update summary count
-            if (summaryData[type] !== undefined) {
+            if (type in summaryData) {
                 summaryData[type] += 1;
             }
 
@@ -215,68 +438,32 @@
             updateTimelineMarkers();
         }
     }
-    function debugTimelinePositions(label) {
-        console.group(`DEBUG TIMELINE (${label})`);
-        console.log(`Video duration: ${videoElement ? videoElement.duration : 'No video'}`);
-        console.log(`Elapsed time: ${elapsedTime}ms`);
-        console.log(`Positions locked: ${arePositionsLocked}`);
 
-        if (timeEntries.length > 0) {
-            console.table(timeEntries.map(entry => ({
-                id: entry.id.substring(0, 10),
-                type: entry.type,
-                elapsedMs: entry.elapsedTimeMs,
-                videoTime: entry.videoTime || 'N/A',
-                position: timelineMarkers.find(m => m.id === entry.id)?.position || 'N/A'
-            })));
-        } else {
-            console.log("No timeline entries");
+    function updateEntryDescription(id: string, description: string): void {
+        timeEntries = timeEntries.map(entry =>
+            entry.id === id ? {...entry, description} : entry
+        );
+    }
+
+    function removeEntry(id: string): void {
+        // Find entry before removal to update summary
+        const entryToRemove = timeEntries.find(entry => entry.id === id);
+
+        // Remove entry from the list
+        timeEntries = timeEntries.filter(entry => entry.id !== id);
+
+        // Update summary count
+        if (entryToRemove && entryToRemove.type in summaryData) {
+            summaryData[entryToRemove.type] -= 1;
         }
-        console.groupEnd();
-    }
-    // Create a separate function to update the timeline markers
-    function updateTimelineMarkers() {
-        console.log("Updating timeline markers...");
 
-        // Calculate and update all marker positions
-        timelineMarkers = timeEntries.map(entry => {
-            // Calculate the position based on current video duration
-            const position = getTimelinePosition(entry);
-
-            // If we're about to lock positions, store this calculated position
-            if (!arePositionsLocked && videoElement && videoElement.duration > 0) {
-                lockedPositions[entry.id] = position;
-            }
-
-            return {
-                ...entry,
-                position,
-                color: getIconColor(entry.type),
-                icon: getIcon(entry.type)
-            };
-        });
-
-        // Force update by incrementing key
-        timelineKey++;
-
-        console.log(`Timeline updated with ${timelineMarkers.length} markers.`);
+        // Update timeline markers
+        updateTimelineMarkers();
     }
 
+    // ========== UI and Utility Functions ==========
 
-    function jumpToVideoTime(time) {
-        if (videoElement && !isNaN(time)) {
-            videoElement.currentTime = time;
-            if (videoElement.paused) {
-                videoElement.play().catch(err => console.error('Error playing video:', err));
-            }
-        }
-    }
-
-    function toggleRightPanel() {
-        isRightPanelOpen = !isRightPanelOpen;
-    }
-
-    function createCustomButton() {
+    function createCustomButton(): void {
         const buttonName = prompt("Enter button name");
         if (buttonName) {
             customButtons = [...customButtons, {
@@ -288,40 +475,30 @@
         }
     }
 
-    function updateEntryDescription(id, description) {
-        timeEntries = timeEntries.map(entry =>
-            entry.id === id ? {...entry, description} : entry
-        );
+    function toggleRightPanel(): void {
+        isRightPanelOpen = !isRightPanelOpen;
     }
 
-    function removeEntry(id) {
-        // Find entry before removal to update summary
-        const entryToRemove = timeEntries.find(entry => entry.id === id);
-
-        // Remove entry from the list
-        timeEntries = timeEntries.filter(entry => entry.id !== id);
-
-        // Update summary count
-        if (entryToRemove && summaryData[entryToRemove.type] !== undefined) {
-            summaryData[entryToRemove.type] -= 1;
-        }
-
-        // Force update timelineMarkers reactive
-        timelineMarkers = timeEntries.map(entry => ({
-            ...entry,
-            position: getTimelinePosition(entry),
-            color: getIconColor(entry.type),
-            icon: getIcon(entry.type)
-        }));
-    }
-
-
-
-    function generateMeetingId() {
+    function generateMeetingId(): string {
         return `meeting-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     }
 
-    async function exportData() {
+    function getIconColor(type: string): string {
+        const annotationType = [...ANNOTATION_TYPES, ...customButtons].find(t => t.id === type);
+        return annotationType ? annotationType.color : '#e0e0e0';
+    }
+
+    function getIcon(type: string): string {
+        const annotationType = [...ANNOTATION_TYPES, ...customButtons].find(t => t.id === type);
+        return annotationType ? annotationType.icon : '•';
+    }
+
+    function getTypeLabel(type: string): string {
+        const annotationType = ANNOTATION_TYPES.find(t => t.id === type);
+        return annotationType ? annotationType.label : type;
+    }
+
+    async function exportData(): Promise<void> {
         const exportData = {
             id: meetingId,
             type: meetingType,
@@ -344,172 +521,62 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
     }
-    let maxRecordedElapsedTime = 0;
-    // Get percentage of video completion for a timestamp
-    function getTimelinePosition(entry) {
-        // If positions are locked, use the locked position
-        if (arePositionsLocked && lockedPositions[entry.id] !== undefined) {
-            return lockedPositions[entry.id];
-        }
 
-        let position = 0;
+    // ========== Event Setup ==========
 
-        // Special case for entries with zero elapsed time
-        if (entry.elapsedTimeMs === 0) {
-            const entryIndex = timeEntries.findIndex(e => e.id === entry.id);
-            if (entryIndex >= 0) {
-                const zeroTimeEntries = timeEntries.filter(e => e.elapsedTimeMs === 0).length;
-                const spacing = 5; // Smaller spacing to keep at start
-                position = 2 + (entryIndex % zeroTimeEntries) * spacing;
-            } else {
-                position = 2;
-            }
-        }
-        // For entries with elapsed time, calculate the position with proper scaling for video duration
-        else if (entry.elapsedTimeMs > 0) {
-            // Get the maximum recorded time for proper scaling
-            const maxTimeToUse = Math.max(maxRecordedElapsedTime, elapsedTime);
+    function setupVideoListeners(): void {
+        if (!videoElement) return;
 
-            if (videoElement && videoElement.duration > 0) {
-                // THIS IS THE KEY FIX:
-                // Scale the elapsed time relative to video duration
-                // If 10s elapsed time and 40s video, markers should only take up first 1/4 of timeline
-                const scaledPosition = (entry.elapsedTimeMs / maxTimeToUse) *
-                    (maxTimeToUse / (videoElement.duration * 1000)) * 100;
+        // Remove existing listeners first to prevent duplicates
+        videoElement.removeEventListener('timeupdate', handleTimeUpdate);
+        videoElement.removeEventListener('durationchange', handleDurationChange);
+        videoElement.removeEventListener('loadedmetadata', handleMetadataLoaded);
+        videoElement.removeEventListener('play', handlePlay);
+        videoElement.removeEventListener('pause', handlePause);
+        videoElement.removeEventListener('ended', handleEnded);
 
-                position = scaledPosition;
-            } else {
-                // If no video, distribute based on elapsed time as before
-                position = (entry.elapsedTimeMs / maxTimeToUse) * 100;
-            }
-        }
-
-        // Ensure position is within bounds
-        return Math.min(98, Math.max(2, position));
+        // Add event listeners
+        videoElement.addEventListener('timeupdate', handleTimeUpdate);
+        videoElement.addEventListener('durationchange', handleDurationChange);
+        videoElement.addEventListener('loadedmetadata', handleMetadataLoaded);
+        videoElement.addEventListener('play', handlePlay);
+        videoElement.addEventListener('pause', handlePause);
+        videoElement.addEventListener('ended', handleEnded);
     }
 
-    // $: if (videoElement) {
-    //     videoElement.ontimeupdate = () => updateTimelineMarkers();
-    // }
-    // // Force timeline update when entries change
-    // $: timelineMarkers = timeEntries.map(entry => ({
-    //     ...entry,
-    //     position: getTimelinePosition(entry),
-    //     color: getIconColor(entry.type),
-    //     icon: getIcon(entry.type)
-    // }));
-
-    // Get icon color based on entry type
-    function getIconColor(type) {
-        const annotationType = [...annotationTypes, ...customButtons].find(t => t.id === type);
-        return annotationType ? annotationType.color : '#e0e0e0';
+    // Event handlers for video
+    function handleTimeUpdate(): void {
+        currentTime = videoElement.currentTime;
     }
 
-    // Get icon for entry type
-    function getIcon(type) {
-        const annotationType = [...annotationTypes, ...customButtons].find(t => t.id === type);
-        return annotationType ? annotationType.icon : '•';
+    function handleDurationChange(): void {
+        duration = videoElement.duration;
     }
 
-    // Get type label
-    function getTypeLabel(type) {
-        const annotationType = annotationTypes.find(t => t.id === type);
-        return annotationType ? annotationType.label : type;
+    function handleMetadataLoaded(): void {
+        duration = videoElement.duration;
+        updateTimelineMarkers();
     }
 
-
-    // This code should be integrated into your Svelte component
-    // Replace the existing video section with this custom implementation
-
-    // Add these to your <script> section
-    let isPlaying = false;
-    let currentTime = 0;
-    let duration = 0;
-    let seekPosition = 0;
-    let isDragging = false;
-
-    function togglePlay() {
-        if (videoElement) {
-            if (videoElement.paused) {
-                // Lock positions when play starts
-                if (!arePositionsLocked && videoElement.duration > 0) {
-                    // Calculate positions for all entries based on current video duration
-                    timeEntries.forEach(entry => {
-                        if (lockedPositions[entry.id] === undefined) {
-                            const position = getTimelinePosition(entry);
-                            lockedPositions[entry.id] = position;
-                        }
-                    });
-                    arePositionsLocked = true;
-                }
-
-                videoElement.play()
-                    .then(() => {
-                        isPlaying = true;
-                    })
-                    .catch(err => {
-                        console.error('Error playing video:', err);
-                        isPlaying = false;
-                    });
-            } else {
-                videoElement.pause();
-                isPlaying = false;
-            }
-        }
+    function handlePlay(): void {
+        isPlaying = true;
+        startVideoProgressUpdates();
+        lockPositionsIfNeeded();
     }
 
-    function formatTime(seconds) {
-        const minutes = Math.floor(seconds / 60);
-        seconds = Math.floor(seconds % 60);
-        return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    function handlePause(): void {
+        isPlaying = false;
+        stopVideoProgressUpdates();
     }
 
-    function handleSeekStart(event) {
-        isDragging = true;
-        handleSeekMove(event);
+    function handleEnded(): void {
+        isPlaying = false;
+        stopVideoProgressUpdates();
     }
 
-    function handleSeekMove(event) {
-        if (!isDragging) return;
-
-        const timeline = event.currentTarget;
-        const rect = timeline.getBoundingClientRect();
-        const position = (event.clientX - rect.left) / rect.width;
-        seekPosition = Math.min(Math.max(position, 0), 1);
-
-        if (videoElement && videoElement.duration) {
-            currentTime = seekPosition * videoElement.duration;
-        }
-    }
-
-    function handleSeekEnd() {
-        if (!isDragging) return;
-
-        isDragging = false;
-        if (videoElement && videoElement.duration) {
-            videoElement.currentTime = seekPosition * videoElement.duration;
-            currentTime = videoElement.currentTime;
-        }
-    }
-
-    function handleTimelineClick(event) {
-        const timeline = event.currentTarget;
-        const rect = timeline.getBoundingClientRect();
-        const clickPosition = (event.clientX - rect.left) / rect.width;
-
-        if (videoElement && videoElement.duration) {
-            videoElement.currentTime = clickPosition * videoElement.duration;
-            currentTime = videoElement.currentTime;
-        }
-    }
-
-    let timelineMarkers = []; // Ensure this variable is declared
-
-    // Fix the onMount function to properly add event listeners
+    // Setup on component mount
     onMount(() => {
-        meetingId = $page.url.searchParams.get('id') || generateMeetingId();
-
-        // Set up video event listeners
+        // Set up video event listeners if video element exists
         if (videoElement) {
             setupVideoListeners();
         }
@@ -518,7 +585,7 @@
         window.addEventListener('mousemove', handleSeekMove);
         window.addEventListener('mouseup', handleSeekEnd);
 
-        // Clean up
+        // Clean up on unmount
         return () => {
             if (timerInterval) clearInterval(timerInterval);
             if (videoURL) URL.revokeObjectURL(videoURL);
@@ -527,104 +594,6 @@
             window.removeEventListener('mouseup', handleSeekEnd);
         };
     });
-
-    // Create a separate function to set up video listeners
-    function setupVideoListeners() {
-        if (!videoElement) return;
-
-        videoElement.addEventListener('timeupdate', () => {
-            currentTime = videoElement.currentTime;
-            // Remove this line since we're using requestAnimationFrame
-            // if (!isDragging && videoElement.duration) {
-            //     seekPosition = currentTime / videoElement.duration;
-            // }
-        });
-
-        videoElement.addEventListener('durationchange', () => {
-            console.log(`Video duration changed to: ${videoElement.duration}s`);
-            duration = videoElement.duration;
-        });
-
-        videoElement.addEventListener('loadedmetadata', () => {
-            console.log(`Video metadata loaded, duration: ${videoElement.duration}s`);
-            duration = videoElement.duration;
-
-            console.log("Updating timeline markers after metadata load...");
-            updateTimelineMarkers();
-
-            debugTimelinePositions("AFTER METADATA LOAD");
-        });
-
-        videoElement.addEventListener('play', () => {
-            isPlaying = true;
-            startVideoProgressUpdates();
-            // Lock positions when video starts playing to prevent jumping
-            if (!arePositionsLocked && timeEntries.length > 0) {
-                console.log("Locking positions on play...");
-
-                timeEntries.forEach(entry => {
-                    const position = getTimelinePosition(entry);
-                    lockedPositions[entry.id] = position;
-                });
-
-                arePositionsLocked = true;
-
-                debugTimelinePositions("AFTER POSITION LOCK");
-            }
-        });
-
-        videoElement.addEventListener('pause', () => {
-            isPlaying = false;
-            stopVideoProgressUpdates();
-        });
-
-        videoElement.addEventListener('ended', () => {
-            isPlaying = false;
-            stopVideoProgressUpdates();
-        });
-    }
-
-    // Modify the handleFileUpload function to set up listeners when a new video is loaded
-    // Add this one line to your handleFileUpload function:
-    let previousVideoDuration = 0;
-    let isRescalingPositions = false;
-
-    // Replace your handleFileUpload function with this one
-    function handleFileUpload(event) {
-        const file = event.target.files[0];
-        if (file && file.type.startsWith('video/')) {
-            console.log(`----- Loading new video: ${file.name} -----`);
-            debugTimelinePositions("BEFORE VIDEO LOAD");
-
-            // Load the new video
-            videoFile = file;
-            if (videoURL) {
-                URL.revokeObjectURL(videoURL);
-            }
-            videoURL = URL.createObjectURL(file);
-
-            // Pause the current video
-            if (videoElement) {
-                videoElement.pause();
-                isPlaying = false;
-            }
-
-            // Reset all position locks to force recalculation
-            arePositionsLocked = false;
-            lockedPositions = {};
-
-            console.log("Position locks reset");
-
-            setTimeout(() => {
-                if (videoElement) {
-                    setupVideoListeners();
-                    videoElement.src = videoURL;
-
-                    console.log("Video source set, waiting for metadata...");
-                }
-            }, 100);
-        }
-    }
 </script>
 
 <div class="meeting-container" style="min-height: 100vh; background-color: #f5f5f5; padding: 1rem;">
@@ -689,7 +658,7 @@
 
                 <!-- Annotation buttons grid -->
                 <div class="annotation-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 2rem;">
-                    {#each annotationTypes as type}
+                    {#each ANNOTATION_TYPES as type}
                         <div class="annotation-button" style="display: flex; flex-direction: column; align-items: center;">
                             <button
                                     style="width: 60px; height: 60px; border-radius: 50%; border: 2px solid #333; display: flex; align-items: center; justify-content: center; background-color: white; cursor: pointer; margin-bottom: 0.5rem; {currentPointType === type.id ? `background-color: ${type.color};` : ''}"
@@ -718,7 +687,7 @@
                 <!-- Timeline with timestamps -->
                 <div style="margin-bottom: 2rem;">
                     <div class="timeline" style="position: relative; height: 30px; background-color: #f0f0f0; border-radius: 15px; margin-bottom: 0.5rem; overflow: hidden;">
-                        {#each timelineMarkers as marker, index (marker.id + timelineKey)}
+                        {#each timelineMarkers as marker (marker.id + timelineKey)}
                             <div
                                     class="timeline-marker"
                                     style="position: absolute; top: 50%; transform: translateY(-50%); left: {marker.position}%; width: 20px; height: 20px; border-radius: 50%; background-color: {marker.color}; display: flex; align-items: center; justify-content: center; font-size: 10px; z-index: 2; cursor: pointer;"
@@ -745,7 +714,7 @@
                             style="font-family: 'Comic Sans MS', cursive; padding: 0.5rem; border: none; background-color: transparent; cursor: pointer; text-decoration: underline;"
                             on:click={toggleRightPanel}
                     >
-                        Expand ▸
+                        {isRightPanelOpen ? 'Collapse ◂' : 'Expand ▸'}
                     </button>
                 </div>
 
@@ -769,7 +738,6 @@
 
                 <div style="position: relative; z-index: 1; padding: 1.5rem;">
                     <!-- Video section -->
-                    <!-- Custom Video Player Section - Replace the existing video section with this code -->
                     <div style="margin-bottom: 2rem; display: flex; flex-direction: column; width: 100%;">
                         <!-- Video Container -->
                         <div style="width: 100%; aspect-ratio: 16/9; background-color: #000; position: relative; border: 2px solid #ccc; overflow: hidden; margin-bottom: 0.5rem;">
@@ -804,11 +772,6 @@
                                  style="position: relative; height: 40px; background-color: #f0f0f0; border-radius: 20px; overflow: hidden; cursor: pointer;"
                                  on:mousedown={handleSeekStart}
                                  on:click={handleTimelineClick}>
-
-                                <!-- Debug info (remove after testing) -->
-                                <!-- <div style="position: absolute; top: 0; left: 0; font-size: 8px; color: black; z-index: 10; background: rgba(255,255,255,0.7); padding: 2px;">
-                                    Markers: {timelineMarkers.length} | Duration: {duration}
-                                </div> -->
 
                                 <!-- Progress bar -->
                                 <div style="position: absolute; left: 0; top: 0; height: 100%; width: {seekPosition * 100}%; background-color: #ddd; transition: width 0.1s linear;"></div>
@@ -879,7 +842,6 @@
                         </div>
                     </div>
 
-                    <!-- Remove the old video timeline section as it's now integrated into the custom player -->
                     <h3 style="font-family: 'Comic Sans MS', cursive; margin-top: 0;">POINTS OF INTEREST</h3>
 
                     <!-- Time entries list -->
@@ -896,7 +858,7 @@
                                             {getIcon(entry.type)}
                                         </span>
                                             <span>
-                                            {annotationTypes.find(t => t.id === entry.type)?.label || entry.type}
+                                            {getTypeLabel(entry.type)}
                                         </span>
                                         </div>
                                         <button
@@ -911,7 +873,7 @@
                                             type="text"
                                             placeholder="Add description..."
                                             value={entry.description}
-                                            on:input={(e) => updateEntryDescription(entry.id, e.target.value)}
+                                            on:input={(e) => updateEntryDescription(entry.id, (e.target as HTMLInputElement).value)}
                                             style="width: 100%; border: none; border-bottom: 1px dashed #ccc; font-family: inherit; background: transparent; margin-top: 0.25rem; padding: 0.25rem 0;"
                                     />
                                 </div>
