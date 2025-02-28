@@ -70,7 +70,34 @@
     // Current point type
     let currentPointType = null;
     let customButtons = [];
+    function scaleTimelinePositions() {
+        // Get all markers sorted by elapsed time
+        const sortedEntries = [...timeEntries].sort((a, b) => a.elapsedTimeMs - b.elapsedTimeMs);
 
+        // If we have a video element with duration
+        if (videoElement && videoElement.duration > 0) {
+            console.log(`Scaling timeline for video duration: ${videoElement.duration}s`);
+
+            // For each entry, scale its position proportionally to the video duration
+            sortedEntries.forEach(entry => {
+                // Calculate position as percentage of total elapsed time
+                const relativeTime = entry.elapsedTimeMs / elapsedTime;
+
+                // Scale to video duration and convert to timeline position
+                const videoTime = relativeTime * videoElement.duration;
+                const position = (videoTime / videoElement.duration) * 100;
+
+                // Store the scaled position
+                lockedPositions[entry.id] = Math.min(98, Math.max(2, position));
+            });
+
+            // Lock positions to keep them from moving
+            arePositionsLocked = true;
+
+            // Update the timeline display
+            updateTimelineMarkers();
+        }
+    }
     function startTimer() {
         if (!isRunning) {
             isRunning = true;
@@ -83,6 +110,9 @@
         if (isRunning) {
             isRunning = false;
             clearInterval(timerInterval);
+
+            // Save the final elapsed time when stopping
+            maxRecordedElapsedTime = Math.max(maxRecordedElapsedTime, elapsedTime);
         }
     }
     let timelineKey = 0; // Used to force UI refresh
@@ -91,6 +121,9 @@
         const minutes = Math.floor(elapsedTime / 60000);
         const seconds = Math.floor((elapsedTime % 60000) / 1000);
         formattedTime = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
+        // Track the maximum elapsed time
+        maxRecordedElapsedTime = Math.max(maxRecordedElapsedTime, elapsedTime);
 
         // Update timeline markers positions as time changes
         updateTimelineMarkers();
@@ -111,7 +144,7 @@
     import { tick } from 'svelte';
     let arePositionsLocked = false;
     let lockedPositions = {};
-    async function recordPoint(type) {
+    function recordPoint(type) {
         if (!isRunning && type !== 'end') {
             startTimer();
         }
@@ -143,24 +176,49 @@
             // Add to time entries
             timeEntries = [...timeEntries, newEntry];
 
-            // Force Svelte to process updates
-            await tick();
-
-            // Calculate and lock this entry's position
-            if (videoElement && videoElement.duration && videoElement.duration > 0) {
+            // Calculate position for this new entry
+            if (videoElement && videoElement.duration > 0) {
                 const position = (capturedVideoTime / videoElement.duration) * 100;
-                lockedPositions[newEntry.id] = position;
+                lockedPositions[newEntry.id] = Math.min(98, Math.max(2, position));
             }
 
             // Update the timeline markers
             updateTimelineMarkers();
         }
     }
+    function debugTimelinePositions(label) {
+        console.group(`DEBUG TIMELINE (${label})`);
+        console.log(`Video duration: ${videoElement ? videoElement.duration : 'No video'}`);
+        console.log(`Elapsed time: ${elapsedTime}ms`);
+        console.log(`Positions locked: ${arePositionsLocked}`);
 
+        if (timeEntries.length > 0) {
+            console.table(timeEntries.map(entry => ({
+                id: entry.id.substring(0, 10),
+                type: entry.type,
+                elapsedMs: entry.elapsedTimeMs,
+                videoTime: entry.videoTime || 'N/A',
+                position: timelineMarkers.find(m => m.id === entry.id)?.position || 'N/A'
+            })));
+        } else {
+            console.log("No timeline entries");
+        }
+        console.groupEnd();
+    }
     // Create a separate function to update the timeline markers
     function updateTimelineMarkers() {
+        console.log("Updating timeline markers...");
+
+        // Calculate and update all marker positions
         timelineMarkers = timeEntries.map(entry => {
+            // Calculate the position based on current video duration
             const position = getTimelinePosition(entry);
+
+            // If we're about to lock positions, store this calculated position
+            if (!arePositionsLocked && videoElement && videoElement.duration > 0) {
+                lockedPositions[entry.id] = position;
+            }
+
             return {
                 ...entry,
                 position,
@@ -169,10 +227,11 @@
             };
         });
 
-        // Force update
+        // Force update by incrementing key
         timelineKey++;
-    }
 
+        console.log(`Timeline updated with ${timelineMarkers.length} markers.`);
+    }
 
 
     function jumpToVideoTime(time) {
@@ -256,33 +315,44 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
     }
-
+    let maxRecordedElapsedTime = 0;
     // Get percentage of video completion for a timestamp
     function getTimelinePosition(entry) {
-        // If we have locked positions and this entry has one, use it
+        // If positions are locked, use the locked position
         if (arePositionsLocked && lockedPositions[entry.id] !== undefined) {
             return lockedPositions[entry.id];
         }
 
         let position = 0;
 
-        // Calculate position - simplified to be more stable
-        if (videoElement && videoElement.duration && videoElement.duration > 0) {
-            // Use video time when available
-            if (entry.videoTime !== undefined) {
-                position = (entry.videoTime / videoElement.duration) * 100;
-
-                // Store this calculated position in locked positions
-                lockedPositions[entry.id] = position;
+        // Special case for entries with zero elapsed time
+        if (entry.elapsedTimeMs === 0) {
+            const entryIndex = timeEntries.findIndex(e => e.id === entry.id);
+            if (entryIndex >= 0) {
+                const zeroTimeEntries = timeEntries.filter(e => e.elapsedTimeMs === 0).length;
+                const spacing = 5; // Smaller spacing to keep at start
+                position = 2 + (entryIndex % zeroTimeEntries) * spacing;
             } else {
-                position = (entry.elapsedTimeMs / Math.max(elapsedTime, 60000)) * 100;
+                position = 2;
             }
-        } else {
-            const maxElapsed = Math.max(
-                ...timeEntries.map(e => e.elapsedTimeMs || 1),
-                elapsedTime || 60000
-            );
-            position = (entry.elapsedTimeMs / maxElapsed) * 100;
+        }
+        // For entries with elapsed time, calculate the position with proper scaling for video duration
+        else if (entry.elapsedTimeMs > 0) {
+            // Get the maximum recorded time for proper scaling
+            const maxTimeToUse = Math.max(maxRecordedElapsedTime, elapsedTime);
+
+            if (videoElement && videoElement.duration > 0) {
+                // THIS IS THE KEY FIX:
+                // Scale the elapsed time relative to video duration
+                // If 10s elapsed time and 40s video, markers should only take up first 1/4 of timeline
+                const scaledPosition = (entry.elapsedTimeMs / maxTimeToUse) *
+                    (maxTimeToUse / (videoElement.duration * 1000)) * 100;
+
+                position = scaledPosition;
+            } else {
+                // If no video, distribute based on elapsed time as before
+                position = (entry.elapsedTimeMs / maxTimeToUse) * 100;
+            }
         }
 
         // Ensure position is within bounds
@@ -334,11 +404,11 @@
             if (videoElement.paused) {
                 // Lock positions when play starts
                 if (!arePositionsLocked && videoElement.duration > 0) {
-                    // First ensure we've calculated positions for all entries
+                    // Calculate positions for all entries based on current video duration
                     timeEntries.forEach(entry => {
                         if (lockedPositions[entry.id] === undefined) {
-                            const position = (entry.videoTime / videoElement.duration) * 100;
-                            lockedPositions[entry.id] = Math.min(98, Math.max(2, position));
+                            const position = getTimelinePosition(entry);
+                            lockedPositions[entry.id] = position;
                         }
                     });
                     arePositionsLocked = true;
@@ -437,22 +507,39 @@
             if (!isDragging && videoElement.duration) {
                 seekPosition = currentTime / videoElement.duration;
             }
-
-            // Don't update marker positions during normal playback
-            // They should stay fixed where they were calculated
         });
 
         videoElement.addEventListener('durationchange', () => {
+            console.log(`Video duration changed to: ${videoElement.duration}s`);
+            duration = videoElement.duration;
+        });
+
+        videoElement.addEventListener('loadedmetadata', () => {
+            console.log(`Video metadata loaded, duration: ${videoElement.duration}s`);
             duration = videoElement.duration;
 
-            // If duration changes and we haven't locked positions yet, recalculate
-            if (!arePositionsLocked && duration > 0) {
-                updateTimelineMarkers();
-            }
+            console.log("Updating timeline markers after metadata load...");
+            updateTimelineMarkers();
+
+            debugTimelinePositions("AFTER METADATA LOAD");
         });
 
         videoElement.addEventListener('play', () => {
             isPlaying = true;
+
+            // Lock positions when video starts playing to prevent jumping
+            if (!arePositionsLocked && timeEntries.length > 0) {
+                console.log("Locking positions on play...");
+
+                timeEntries.forEach(entry => {
+                    const position = getTimelinePosition(entry);
+                    lockedPositions[entry.id] = position;
+                });
+
+                arePositionsLocked = true;
+
+                debugTimelinePositions("AFTER POSITION LOCK");
+            }
         });
 
         videoElement.addEventListener('pause', () => {
@@ -465,28 +552,42 @@
     }
 
     // Modify the handleFileUpload function to set up listeners when a new video is loaded
+    // Add this one line to your handleFileUpload function:
+    let previousVideoDuration = 0;
+    let isRescalingPositions = false;
+
+    // Replace your handleFileUpload function with this one
     function handleFileUpload(event) {
         const file = event.target.files[0];
         if (file && file.type.startsWith('video/')) {
-            // Reset position locking when a new video is loaded
-            arePositionsLocked = false;
-            lockedPositions = {};
+            console.log(`----- Loading new video: ${file.name} -----`);
+            debugTimelinePositions("BEFORE VIDEO LOAD");
 
+            // Load the new video
             videoFile = file;
-            // Create object URL for the video
             if (videoURL) {
                 URL.revokeObjectURL(videoURL);
             }
             videoURL = URL.createObjectURL(file);
 
-            // Set a timeout to ensure the video element is available after render
+            // Pause the current video
+            if (videoElement) {
+                videoElement.pause();
+                isPlaying = false;
+            }
+
+            // Reset all position locks to force recalculation
+            arePositionsLocked = false;
+            lockedPositions = {};
+
+            console.log("Position locks reset");
+
             setTimeout(() => {
                 if (videoElement) {
                     setupVideoListeners();
-                    // Force update timeline markers once video is loaded
-                    videoElement.addEventListener('loadedmetadata', () => {
-                        updateTimelineMarkers();
-                    }, { once: true });
+                    videoElement.src = videoURL;
+
+                    console.log("Video source set, waiting for metadata...");
                 }
             }, 100);
         }
