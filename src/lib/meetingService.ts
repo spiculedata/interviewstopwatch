@@ -1,31 +1,17 @@
 // src/lib/meetingService.ts
-
-// Types for meeting data
-export interface TimeEntry {
-    type: string;
-    utcTime: string;
-    stopwatchTime: string;
-    elapsedTime: string;
-}
-
-export interface SummaryData {
-    painPoints: number;
-    positivePoints: number;
-    bugs: number;
-    paymentInfo: number;
-}
+import type { TimeEntry as StoreTimeEntry, SummaryData } from '$lib/types';
 
 export interface MeetingData {
     id: string;
     type: string;
     name: string;
-    customName?: string;
+    customName?: string | null;
     duration: number;
     formattedDuration: string;
-    entries: TimeEntry[];
+    entries: StoreTimeEntry[];
     summary: SummaryData;
     startedAt: string;
-    utcTime: string;
+    utcTime?: string;
 }
 
 export interface ServiceResponse {
@@ -38,34 +24,43 @@ export interface DataResponse<T> extends ServiceResponse {
     data?: T;
 }
 
-/**
- * Save meeting data to the server
- * @param meetingData The meeting data to save
- * @returns Promise with operation result
- */
-export async function saveMeetingData(meetingData: MeetingData): Promise<ServiceResponse> {
+const KEY_PREFIX = 'meeting:';
+const REGISTRY_KEY = 'meeting:registry';
+
+function hasStorage(): boolean {
+    return typeof window !== 'undefined' && !!window.localStorage;
+}
+
+function readRegistry(): string[] {
+    if (!hasStorage()) return [];
+    const raw = window.localStorage.getItem(REGISTRY_KEY);
+    if (!raw) return [];
     try {
-        const response = await fetch('/api/meetings', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(meetingData)
-        });
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    } catch {
+        return [];
+    }
+}
 
-        const result = await response.json();
+function writeRegistry(ids: string[]): void {
+    if (!hasStorage()) return;
+    window.localStorage.setItem(REGISTRY_KEY, JSON.stringify(ids));
+}
 
-        if (!response.ok) {
-            throw new Error(result.error || 'Failed to save meeting data');
+export async function saveMeetingData(meetingData: MeetingData): Promise<ServiceResponse> {
+    if (!hasStorage()) {
+        return { success: false, message: 'localStorage unavailable' };
+    }
+    try {
+        window.localStorage.setItem(KEY_PREFIX + meetingData.id, JSON.stringify(meetingData));
+        const registry = readRegistry();
+        if (!registry.includes(meetingData.id)) {
+            registry.push(meetingData.id);
+            writeRegistry(registry);
         }
-
-        return {
-            success: true,
-            message: 'Meeting data saved successfully'
-        };
+        return { success: true, message: 'Meeting data saved successfully' };
     } catch (error) {
-        console.error('Error saving meeting data:', error);
-
         return {
             success: false,
             message: error instanceof Error ? error.message : 'Failed to save meeting data'
@@ -73,27 +68,17 @@ export async function saveMeetingData(meetingData: MeetingData): Promise<Service
     }
 }
 
-/**
- * Retrieve meeting data from the server
- * @param meetingId ID of the meeting to retrieve
- * @returns Promise with meeting data or error
- */
 export async function getMeetingData(meetingId: string): Promise<DataResponse<MeetingData>> {
+    if (!hasStorage()) {
+        return { success: false, message: 'localStorage unavailable' };
+    }
     try {
-        const response = await fetch(`/api/meetings?id=${encodeURIComponent(meetingId)}`);
-        const result = await response.json();
-
-        if (!response.ok) {
-            throw new Error(result.error || 'Failed to retrieve meeting data');
+        const raw = window.localStorage.getItem(KEY_PREFIX + meetingId);
+        if (!raw) {
+            return { success: false, message: 'Meeting not found' };
         }
-
-        return {
-            success: true,
-            data: result.data
-        };
+        return { success: true, data: JSON.parse(raw) as MeetingData };
     } catch (error) {
-        console.error('Error retrieving meeting data:', error);
-
         return {
             success: false,
             message: error instanceof Error ? error.message : 'Failed to retrieve meeting data'
@@ -101,30 +86,15 @@ export async function getMeetingData(meetingId: string): Promise<DataResponse<Me
     }
 }
 
-/**
- * Delete meeting data
- * @param meetingId ID of the meeting to delete
- * @returns Promise with operation result
- */
 export async function deleteMeetingData(meetingId: string): Promise<ServiceResponse> {
+    if (!hasStorage()) {
+        return { success: false, message: 'localStorage unavailable' };
+    }
     try {
-        const response = await fetch(`/api/meetings?id=${encodeURIComponent(meetingId)}`, {
-            method: 'DELETE'
-        });
-
-        const result = await response.json();
-
-        if (!response.ok) {
-            throw new Error(result.error || 'Failed to delete meeting data');
-        }
-
-        return {
-            success: true,
-            message: 'Meeting data deleted successfully'
-        };
+        window.localStorage.removeItem(KEY_PREFIX + meetingId);
+        writeRegistry(readRegistry().filter(id => id !== meetingId));
+        return { success: true, message: 'Meeting data deleted successfully' };
     } catch (error) {
-        console.error('Error deleting meeting data:', error);
-
         return {
             success: false,
             message: error instanceof Error ? error.message : 'Failed to delete meeting data'
@@ -132,26 +102,21 @@ export async function deleteMeetingData(meetingId: string): Promise<ServiceRespo
     }
 }
 
-/**
- * Get all meetings
- * @returns Promise with array of meeting data
- */
 export async function getAllMeetings(): Promise<DataResponse<MeetingData[]>> {
+    if (!hasStorage()) {
+        return { success: true, data: [] };
+    }
     try {
-        const response = await fetch('/api/meetings?all=true');
-        const result = await response.json();
-
-        if (!response.ok) {
-            throw new Error(result.error || 'Failed to retrieve meetings');
+        const ids = readRegistry();
+        const meetings: MeetingData[] = [];
+        for (const id of ids) {
+            const raw = window.localStorage.getItem(KEY_PREFIX + id);
+            if (raw) {
+                try { meetings.push(JSON.parse(raw) as MeetingData); } catch { /* skip */ }
+            }
         }
-
-        return {
-            success: true,
-            data: result.data || []
-        };
+        return { success: true, data: meetings };
     } catch (error) {
-        console.error('Error retrieving all meetings:', error);
-
         return {
             success: false,
             message: error instanceof Error ? error.message : 'Failed to retrieve meetings',

@@ -1,5 +1,3 @@
-// Type definitions for meeting data
-
 export type AnnotationType = {
     id: string;
     icon: string;
@@ -24,17 +22,19 @@ export type TimelineMarker = TimeEntry & {
     icon: string;
 };
 
+// Keys match ANNOTATION_TYPES ids one-to-one. Adding a new annotation type
+// means adding its id here too.
 export type SummaryData = {
     userInfo: number;
-    questions: number;
-    answers: number;
-    painPoints: number;
+    question: number;
+    answer: number;
+    pain: number;
     ambivalent: number;
-    successPoints: number;
-    featureIdeas: number;
-    notes: number;
+    success: number;
+    idea: number;
+    note: number;
     other: number;
-    [key: string]: number; // Index signature for dynamic access
+    [key: string]: number;
 };
 
 export const ANNOTATION_TYPES: AnnotationType[] = [

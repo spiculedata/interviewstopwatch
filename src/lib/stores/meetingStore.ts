@@ -57,13 +57,13 @@ interface ExportedMeetingData {
 // Initial summary data
 const createSummaryData = (): SummaryData => ({
     userInfo: 0,
-    questions: 0,
-    answers: 0,
-    painPoints: 0,
+    question: 0,
+    answer: 0,
+    pain: 0,
     ambivalent: 0,
-    successPoints: 0,
-    featureIdeas: 0,
-    notes: 0,
+    success: 0,
+    idea: 0,
+    note: 0,
     other: 0
 });
 
